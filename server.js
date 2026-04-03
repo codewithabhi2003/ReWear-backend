@@ -24,24 +24,37 @@ const httpServer = http.createServer(app);
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: {
-    origin:  process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: process.env.CLIENT_URL || 'http://localhost:5173',
     methods: ['GET', 'POST'],
   },
 });
 
-// Make io accessible in controllers via req.app.get('io')
+// Make io accessible in controllers
 app.set('io', io);
 
-// Attach chat socket handler
+// Attach socket handler
 require('./socket/chatSocket')(io);
 
 // ── Global Middleware ─────────────────────────────────────────────────────────
 app.use(cors({
-  origin:      process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true,
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ── Root Route (FIX FOR RENDER) ───────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: 'ReWear API is running 🚀',
+    status: 'OK'
+  });
+});
+
+// Handle HEAD request (Render health check)
+app.head('/', (req, res) => {
+  res.sendStatus(200);
+});
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
@@ -68,13 +81,13 @@ app.use((req, res, next) => {
   next(new Error(`Route not found: ${req.method} ${req.originalUrl}`));
 });
 
-// ── Global Error Handler (must be last) ──────────────────────────────────────
+// ── Global Error Handler ──────────────────────────────────────────────────────
 app.use(errorHandler);
 
 // ── Start Server ──────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
-  console.log(`\n🚀 ReWear server running on port ${PORT}`);
+  console.log(`🚀 ReWear server running on port ${PORT}`);
   console.log(`📡 Socket.io active`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV}\n`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
 });
