@@ -44,10 +44,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ── Root Route (FIX FOR RENDER) ───────────────────────────────────────────────
+// Root route
 app.get('/', (req, res) => {
   res.status(200).json({
-    message: 'ReWear API is running 🚀',
-    status: 'OK'
+    message: 'ReWear API is running 🚀'
   });
 });
 
@@ -56,9 +56,9 @@ app.head('/', (req, res) => {
   res.sendStatus(200);
 });
 
-// ── Health check ──────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Handle favicon (browser automatically requests this)
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end(); // No content
 });
 
 // ── API Routes ────────────────────────────────────────────────────────────────
