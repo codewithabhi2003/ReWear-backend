@@ -14,7 +14,6 @@ const {
   orderRouter, paymentRouter, cartRouter, wishlistRouter,
   chatRouter,  reviewRouter,  notifRouter, adminRouter, reportRouter,
 } = require('./routes/index');
-
 const aiRoutes = require('./routes/aiRoutes');
 
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
@@ -23,54 +22,40 @@ connectDB();
 const app        = express();
 const httpServer = http.createServer(app);
 
+// ── Allowed origins ───────────────────────────────────────────────────────────
+const ALLOWED_ORIGINS = [
+  'https://rewear-dusky.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
-// Make io accessible in controllers
 app.set('io', io);
-
-// Attach socket handler
 require('./socket/chatSocket')(io);
 
 // ── Global Middleware ─────────────────────────────────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = [
-      'https://rewear-dusky.vercel.app',
-      'http://localhost:5173',
-      'http://localhost:3000',
-    ];
-    if (!origin || allowed.includes(origin)) callback(null, true);
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) callback(null, true);
     else callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use('/api/ai', aiRoutes);
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ── Root Route (FIX FOR RENDER) ───────────────────────────────────────────────
-// Root route
-app.get('/', (req, res) => {
-  res.status(200).json({
-    message: 'ReWear API is running 🚀'
-  });
-});
-
-// Handle HEAD request (Render health check)
-app.head('/', (req, res) => {
-  res.sendStatus(200);
-});
-
-// Handle favicon (browser automatically requests this)
-app.get('/favicon.ico', (req, res) => {
-  res.status(204).end(); // No content
-});
+// ── Root Route ────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => res.status(200).json({ message: 'ReWear API is running 🚀' }));
+app.head('/', (req, res) => res.sendStatus(200));
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api/auth',          authRoutes);
@@ -85,17 +70,18 @@ app.use('/api/reviews',       reviewRouter);
 app.use('/api/notifications', notifRouter);
 app.use('/api/admin',         adminRouter);
 app.use('/api/reports',       reportRouter);
+app.use('/api/ai',            aiRoutes);
 
-// ── 404 catch ─────────────────────────────────────────────────────────────────
+// ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.status(404);
   next(new Error(`Route not found: ${req.method} ${req.originalUrl}`));
 });
 
-// ── Global Error Handler ──────────────────────────────────────────────────────
+// ── Error Handler ─────────────────────────────────────────────────────────────
 app.use(errorHandler);
 
-// ── Start Server ──────────────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
   console.log(`🚀 ReWear server running on port ${PORT}`);
