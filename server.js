@@ -15,6 +15,8 @@ const {
   chatRouter,  reviewRouter,  notifRouter, adminRouter, reportRouter,
 } = require('./routes/index');
 
+const aiRoutes = require('./routes/aiRoutes');
+
 // ── Connect to MongoDB ────────────────────────────────────────────────────────
 connectDB();
 
@@ -37,11 +39,20 @@ require('./socket/chatSocket')(io);
 
 // ── Global Middleware ─────────────────────────────────────────────────────────
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    const allowed = [
+      'https://rewear-dusky.vercel.app',
+      'http://localhost:5173',
+      'http://localhost:3000',
+    ];
+    if (!origin || allowed.includes(origin)) callback(null, true);
+    else callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/api/ai', aiRoutes);
 
 // ── Root Route (FIX FOR RENDER) ───────────────────────────────────────────────
 // Root route
