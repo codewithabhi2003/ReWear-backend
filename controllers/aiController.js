@@ -30,7 +30,7 @@ const uploadToCloudinary = (buffer) => {
   });
 };
 
-const SYSTEM_PROMPT = `You are ReWear AI — a smart shopping assistant for ReWear, a second-hand branded fashion marketplace in India.
+const SYSTEM_PROMPT = `You are ReWear AI — a smart shopping assistant for ReWear, a pre-loved branded fashion marketplace in India.
 
 You help users with:
 1. PRODUCT FINDER: When users describe what they want (e.g., "shoes under 1000", "Nike t-shirt"), respond ONLY with this exact JSON:
@@ -42,25 +42,31 @@ You help users with:
      a) "How long have you used it? (days/months/years)"
      b) "How often did you use it? (daily/weekly/rarely)"
      c) "Any visible damage? (tears, stains, fading, none)"
-   - Once you have all info, respond with JSON:
+   - Once you have all info, respond ONLY with this JSON:
    {"action":"priceEstimate","item":"<name>","originalPrice":<number>,"usageDuration":"<text>","usageFrequency":"<text>","damage":"<text>","estimatedPrice":<number>,"breakdown":{"baseDepreciation":"<text>","conditionAdjustment":"<text>","brandMultiplier":"<text>"}}
    - If user gives all info at once (original price, duration, frequency, damage), skip questions and estimate immediately.
 
-3. PLATFORM GUIDE: Answer questions about how ReWear works — listing products, payments (Razorpay), order tracking, negotiating, privacy, notifications.
+3. PLATFORM GUIDE: Answer questions about how ReWear works:
+   - Listing: Go to Seller Dashboard → List Product. Upload images, set price/brand/size/condition. Listing goes to admin for verification before going live.
+   - Negotiation: Open any product → click Chat → tap the 🏷️ Negotiate button → drag the slider to set your offer price → send. Seller can accept, counter, or decline.
+   - Payment: After a deal is agreed in chat, tap Pay → you'll go through a 3-step checkout (address → review → Razorpay). Pay securely via Razorpay.
+   - Tracking: Go to My Orders to see your order status: Pending → Confirmed → Packed → Shipped → Delivered.
+   - Privacy: ReWear's Privacy Policy is at /privacy-policy. Your data is never sold to third parties.
+   - Notifications: The bell icon (🔔) in the top bar shows your notifications. Click it to see order updates and messages.
+   - Reporting: Use the 🚩 flag icon in the navbar or the Report link in the footer to report a listing or seller.
 
 Rules:
-- Prices are in Indian Rupees (₹)
-- Be friendly, concise, fashion-aware
-- For searches, ONLY output the JSON — nothing else
+- Prices are always in Indian Rupees (₹)
+- Be friendly, concise, and fashion-aware
+- For searches, ONLY output the JSON — no extra text
 - For price estimates with complete info, output ONLY the JSON
 - For guides, respond in plain helpful text (2-4 sentences max)
-- Never make up products — only search real DB`;
+- Never make up products — only search the real database`;
 
 // ── Upload image to Cloudinary ────────────────────────────────────────────────
 const uploadAIImage = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
-
     const result = await uploadToCloudinary(req.file.buffer);
     res.json({ imageUrl: result.secure_url });
   } catch (err) {
@@ -80,6 +86,7 @@ const handleAIChat = async (req, res) => {
 
   let userParts = [];
 
+  // ── Handle image from Cloudinary URL ──────────────────────────────────────
   if (imageUrl) {
     try {
       const response = await fetch(imageUrl);
@@ -108,8 +115,8 @@ const handleAIChat = async (req, res) => {
 
       const chat = model.startChat({
         history: [
-          { role: "user", parts: [{ text: SYSTEM_PROMPT }] },
-          { role: "model", parts: [{ text: "Understood! I'm ReWear AI, ready to help." }] },
+          { role: "user",  parts: [{ text: SYSTEM_PROMPT }] },
+          { role: "model", parts: [{ text: "Understood! I'm ReWear AI, ready to help find products, estimate resale prices, and guide you around the platform." }] },
           ...history,
         ],
       });
@@ -117,46 +124,53 @@ const handleAIChat = async (req, res) => {
       const result = await chat.sendMessage(userParts);
       const aiText = result.response.text().trim();
 
+      // ── Try to parse JSON action ─────────────────────────────────────────
       try {
         const jsonMatch = aiText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
 
+          // ── Product Search ───────────────────────────────────────────────
           if (parsed.action === "search") {
             const query = parsed.query || "";
+
+            // Build filter using CORRECT field names from Product model
             const filter = { status: "approved" };
-            if (parsed.maxPrice) filter.price = { $lte: parsed.maxPrice };
-            if (parsed.category)
-              filter.category = { $regex: parsed.category, $options: "i" };
+            if (parsed.maxPrice) filter.sellingPrice = { $lte: Number(parsed.maxPrice) };
+            if (parsed.category) filter.category = { $regex: parsed.category, $options: "i" };
 
             const products = await Product.find({
               ...filter,
               $or: [
-                { name: { $regex: query, $options: "i" } },
-                { brand: { $regex: query, $options: "i" } },
-                { category: { $regex: query, $options: "i" } },
+                { title:       { $regex: query, $options: "i" } },  // ✅ correct field
+                { brand:       { $regex: query, $options: "i" } },
+                { category:    { $regex: query, $options: "i" } },
                 { description: { $regex: query, $options: "i" } },
               ],
             })
               .limit(6)
-              .select("_id name brand price images category condition");
+              .select("_id title brand sellingPrice images category condition size"); // ✅ correct fields
 
             return res.json({
               type: "products",
               products,
               message: products.length
-                ? `Found ${products.length} items for "${query}"`
-                : `No products found for "${query}". Try different keywords.`,
+                ? `Found ${products.length} item${products.length > 1 ? "s" : ""} for "${query}" 🛍️`
+                : `No products found for "${query}". Try different keywords like the brand or category.`,
             });
           }
 
+          // ── Price Estimate ───────────────────────────────────────────────
           if (parsed.action === "priceEstimate") {
             return res.json({ type: "priceEstimate", data: parsed });
           }
         }
-      } catch (_) {}
+      } catch (_) {
+        // Not JSON — fall through to plain text
+      }
 
       return res.json({ type: "text", message: aiText });
+
     } catch (err) {
       const isQuotaError =
         err?.status === 429 ||
@@ -164,11 +178,10 @@ const handleAIChat = async (req, res) => {
         err?.message?.includes("rate");
 
       if (isQuotaError && attempt < API_KEYS.length - 1) {
-  rotateKey();
-  await new Promise(r => setTimeout(r, 2000)); // wait 2s before next key
-  continue;
-}
-
+        rotateKey();
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
 
       lastError = err;
       break;
@@ -176,7 +189,7 @@ const handleAIChat = async (req, res) => {
   }
 
   console.error("AI Chat Error:", lastError);
-  res.status(500).json({ message: "AI service error", error: lastError?.message });
+  res.status(500).json({ message: "AI service temporarily unavailable", error: lastError?.message });
 };
 
 module.exports = { handleAIChat, uploadAIImage };
