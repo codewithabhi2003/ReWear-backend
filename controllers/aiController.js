@@ -11,13 +11,40 @@ const API_KEYS = [
 
 let currentKeyIndex = 0;
 
+// Model fallback chain — tries cheaper/faster models first
+const MODEL_CHAIN = [
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash",
+];
+
+let currentModelIndex = 0;
+
 const getModel = () => {
   const genAI = new GoogleGenerativeAI(API_KEYS[currentKeyIndex]);
-  return genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+  return genAI.getGenerativeModel({ model: MODEL_CHAIN[currentModelIndex] });
 };
 
 const rotateKey = () => {
   currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
+};
+
+// Rotate to next model in fallback chain
+const rotateModel = () => {
+  currentModelIndex = (currentModelIndex + 1) % MODEL_CHAIN.length;
+};
+
+// Parse retry delay from Gemini error response (e.g. "39s" → 39000ms)
+const getRetryDelay = (err) => {
+  try {
+    const retryInfo = err?.errorDetails?.find(
+      (d) => d["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
+    );
+    if (retryInfo?.retryDelay) {
+      const seconds = parseInt(retryInfo.retryDelay.replace("s", ""), 10);
+      return Math.min(seconds * 1000, 10000); // cap at 10s — don't block too long
+    }
+  } catch (_) {}
+  return 3000; // default 3s
 };
 
 const uploadToCloudinary = (buffer) => {
@@ -109,7 +136,10 @@ const handleAIChat = async (req, res) => {
 
   let lastError;
 
-  for (let attempt = 0; attempt < API_KEYS.length; attempt++) {
+  // Total attempts = keys × models
+  const totalAttempts = API_KEYS.length * MODEL_CHAIN.length;
+
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
     try {
       const model = getModel();
 
@@ -177,9 +207,16 @@ const handleAIChat = async (req, res) => {
         err?.message?.includes("quota") ||
         err?.message?.includes("rate");
 
-      if (isQuotaError && attempt < API_KEYS.length - 1) {
+      if (isQuotaError && attempt < totalAttempts - 1) {
+        const delay = getRetryDelay(err);
+        // Rotate key first, if all keys tried then rotate model
+        if ((attempt + 1) % API_KEYS.length === 0) {
+          rotateModel();
+          console.warn(`⚠️ All keys quota-exceeded. Switching to model: ${MODEL_CHAIN[currentModelIndex]}`);
+        }
         rotateKey();
-        await new Promise((r) => setTimeout(r, 2000));
+        console.warn(`⚠️ Gemini 429 — rotating key. Waiting ${delay}ms. Attempt ${attempt + 1}/${totalAttempts}`);
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
 
@@ -189,7 +226,16 @@ const handleAIChat = async (req, res) => {
   }
 
   console.error("AI Chat Error:", lastError);
-  res.status(500).json({ message: "AI service temporarily unavailable", error: lastError?.message });
+  console.error("AI Chat Error:", lastError?.message);
+
+  // Check if it's a quota error to give a helpful message
+  const isQuota = lastError?.status === 429 || lastError?.message?.includes("quota");
+  res.status(isQuota ? 503 : 500).json({
+    message: isQuota
+      ? "AI is taking a short break (free-tier limit reached). Please try again in a few minutes ☕"
+      : "AI service temporarily unavailable",
+    error: lastError?.message,
+  });
 };
 
 module.exports = { handleAIChat, uploadAIImage };
