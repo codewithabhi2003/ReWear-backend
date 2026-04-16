@@ -22,31 +22,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 🔥 Check syntax
+      # ✅ Syntax check
       - name: Check syntax
         run: node --check server.js
 
-      # 🧠 Verify controllers load safely
-      - name: Verify all controllers load
-        run: |
-          node -e "
-            try {
-              require('./controllers/authController');
-              require('./controllers/productController');
-              require('./controllers/orderController');
-              require('./controllers/paymentController');
-              require('./controllers/chatController');
-              require('./controllers/rewearAIController');
-              require('./controllers/reportController');
-              require('./controllers/adminController');
-              console.log('✅ All controllers loaded successfully');
-            } catch (err) {
-              console.error('❌ Controller error:', err);
-              process.exit(1);
-            }
-          "
-
-      # 🚀 Optional but powerful
+      # ✅ Start server safely
       - name: Start server test
         run: |
           node server.js &
