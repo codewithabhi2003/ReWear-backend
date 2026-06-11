@@ -17,7 +17,7 @@ jobs:
       
       - name: 🎯 Ping Health Endpoint
         run: |
-          BACKEND_URL="https://rewear-backend-lxl1.onrender.com"
+          BACKEND_URL="https://rewear-backend-1xl1.onrender.com"
           
           # Make the ping request - FAIL if it takes too long
           curl -X GET "$BACKEND_URL/health" \
