@@ -2,7 +2,7 @@ name: 🔔 ReWear Backend Keep-Alive
 
 on:
   schedule:
-    - cron: '*/4 * * * *'  # CHANGED: Every 4 minutes (was 8)
+    - cron: '*/2 * * * *'  # CHANGED: Every 4 minutes (was 8)
   workflow_dispatch:
 
 jobs:
