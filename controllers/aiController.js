@@ -203,32 +203,126 @@ const handleAIChat = async (req, res) => {
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
 
-        if (parsed.action === "search") {
-          const query  = parsed.query || "";
-          const filter = { status: "approved" };
-          if (parsed.maxPrice) filter.sellingPrice = { $lte: Number(parsed.maxPrice) };
-          if (parsed.category) filter.category     = { $regex: parsed.category, $options: "i" };
+       if (parsed.action === "search") {
+  const query = String(parsed.query || "").trim();
+  const category = String(parsed.category || "").trim();
 
-          const products = await Product.find({
-            ...filter,
-            $or: [
-              { title:       { $regex: query, $options: "i" } },
-              { brand:       { $regex: query, $options: "i" } },
-              { category:    { $regex: query, $options: "i" } },
-              { description: { $regex: query, $options: "i" } },
-            ],
-          })
-            .limit(6)
-            .select("_id title brand sellingPrice images category condition size");
+  const filter = {
+    status: "approved",
+  };
 
-          return res.json({
-            type:     "products",
-            products,
-            message:  products.length
-              ? `Found ${products.length} item${products.length > 1 ? "s" : ""} for "${query}" 🛍️`
-              : `No products found for "${query}". Try different keywords like the brand or category.`,
-          });
-        }
+  // Price filter
+  if (
+    parsed.maxPrice !== null &&
+    parsed.maxPrice !== undefined &&
+    Number(parsed.maxPrice) > 0
+  ) {
+    filter.sellingPrice = {
+      $lte: Number(parsed.maxPrice),
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // SEARCH TERMS
+  // ─────────────────────────────────────────────────────────────────────
+
+  const searchTerms = [];
+
+  if (query) {
+    searchTerms.push(query);
+  }
+
+  if (category) {
+    searchTerms.push(category);
+  }
+
+  // Add common product synonyms
+  const synonymMap = {
+    sneaker: ["sneaker", "sneakers", "shoe", "shoes", "footwear"],
+    sneakers: ["sneaker", "sneakers", "shoe", "shoes", "footwear"],
+
+    shoe: ["shoe", "shoes", "sneaker", "sneakers", "footwear"],
+    shoes: ["shoe", "shoes", "sneaker", "sneakers", "footwear"],
+
+    watch: ["watch", "watches"],
+    watches: ["watch", "watches"],
+
+    shirt: ["shirt", "shirts"],
+    shirts: ["shirt", "shirts"],
+
+    tshirt: ["tshirt", "tshirts", "t-shirt", "t-shirts", "tee"],
+    "t-shirt": ["tshirt", "tshirts", "t-shirt", "t-shirts", "tee"],
+
+    jeans: ["jeans", "denim"],
+
+    jacket: ["jacket", "jackets"],
+    jackets: ["jacket", "jackets"],
+
+    hoodie: ["hoodie", "hoodies", "sweatshirt", "sweatshirts"],
+    hoodies: ["hoodie", "hoodies", "sweatshirt", "sweatshirts"],
+  };
+
+  const termsToExpand = [...searchTerms];
+
+  termsToExpand.forEach((term) => {
+    const key = term.toLowerCase();
+
+    if (synonymMap[key]) {
+      searchTerms.push(...synonymMap[key]);
+    }
+  });
+
+  // Remove duplicate terms
+  const uniqueTerms = [...new Set(
+    searchTerms
+      .map((term) => term.trim())
+      .filter(Boolean)
+  )];
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MONGODB SEARCH
+  // ─────────────────────────────────────────────────────────────────────
+
+  const searchConditions = uniqueTerms.flatMap((term) => {
+    const regex = {
+      $regex: term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      $options: "i",
+    };
+
+    return [
+      { title: regex },
+      { brand: regex },
+      { category: regex },
+      { description: regex },
+    ];
+  });
+
+  if (searchConditions.length > 0) {
+    filter.$or = searchConditions;
+  }
+
+  const products = await Product.find(filter)
+    .limit(6)
+    .select("_id title brand sellingPrice images category condition size");
+
+  console.log("🔎 AI INVENTORY SEARCH:", {
+    query,
+    category,
+    maxPrice: parsed.maxPrice,
+    searchTerms: uniqueTerms,
+    results: products.length,
+  });
+
+  return res.json({
+    type: "products",
+    products,
+    message: products.length
+      ? `Found ${products.length} item${
+          products.length > 1 ? "s" : ""
+        } for "${query}" 🛍️`
+      : `No products found for "${query}". Try different keywords like the brand or category.`,
+  });
+}
 
         if (parsed.action === "priceEstimate") {
           if (!isPriceEstimateComplete(parsed)) {
