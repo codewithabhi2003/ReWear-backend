@@ -126,9 +126,105 @@ const runTextChat = async (messages) =>
     const completion = await groq.chat.completions.create({
       model: modelName,
       messages,
-      max_completion_tokens: 500,
-      temperature: 0.3,
-      include_reasoning: false,
+      max_completion_tokens: 700,
+      temperature: 0.2,
+      reasoning_effort: "low",
+
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "rewear_ai_response",
+          strict: true,
+          schema: {
+            type: "object",
+
+            properties: {
+              action: {
+                type: "string",
+                enum: ["text", "search", "priceEstimate"],
+              },
+
+              message: {
+                type: "string",
+              },
+
+              query: {
+                type: ["string", "null"],
+              },
+
+              maxPrice: {
+                type: ["number", "null"],
+              },
+
+              category: {
+                type: ["string", "null"],
+              },
+
+              item: {
+                type: ["string", "null"],
+              },
+
+              originalPrice: {
+                type: ["number", "null"],
+              },
+
+              usageDuration: {
+                type: ["string", "null"],
+              },
+
+              usageFrequency: {
+                type: ["string", "null"],
+              },
+
+              damage: {
+                type: ["string", "null"],
+              },
+
+              estimatedPrice: {
+                type: ["number", "null"],
+              },
+
+              breakdown: {
+                type: ["object", "null"],
+                properties: {
+                  baseDepreciation: {
+                    type: "string",
+                  },
+                  conditionAdjustment: {
+                    type: "string",
+                  },
+                  brandMultiplier: {
+                    type: "string",
+                  },
+                },
+                required: [
+                  "baseDepreciation",
+                  "conditionAdjustment",
+                  "brandMultiplier",
+                ],
+                additionalProperties: false,
+              },
+            },
+
+            required: [
+              "action",
+              "message",
+              "query",
+              "maxPrice",
+              "category",
+              "item",
+              "originalPrice",
+              "usageDuration",
+              "usageFrequency",
+              "damage",
+              "estimatedPrice",
+              "breakdown",
+            ],
+
+            additionalProperties: false,
+          },
+        },
+      },
     });
 
     return completion.choices[0]?.message?.content?.trim() || "";
