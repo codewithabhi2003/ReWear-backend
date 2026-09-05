@@ -124,12 +124,13 @@ const uploadAIImage = async (req, res) => {
 const runTextChat = async (messages) =>
   runGroq(async (groq, modelName) => {
     const completion = await groq.chat.completions.create({
-      model:       modelName,
+      model: modelName,
       messages,
-      max_tokens:  400,
-      temperature: 0.6,
-      tool_choice: "none",
+      max_completion_tokens: 500,
+      temperature: 0.3,
+      include_reasoning: false,
     });
+
     return completion.choices[0]?.message?.content?.trim() || "";
   });
 
