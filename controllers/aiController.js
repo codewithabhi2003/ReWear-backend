@@ -270,172 +270,456 @@ const isPriceEstimateComplete = (parsed) => {
 
 // ── Main AI chat handler ──────────────────────────────────────────────────────
 const handleAIChat = async (req, res) => {
-  const { message, imageUrl, conversationHistory = [], userName } = req.body;
+  const {
+    message,
+    imageUrl,
+    conversationHistory = [],
+    userName,
+  } = req.body;
 
-  if (!message && !imageUrl)
-    return res.status(400).json({ message: "No message or image provided." });
+  // ─────────────────────────────────────────────────────────────────────────
+  // VALIDATION
+  // ─────────────────────────────────────────────────────────────────────────
+
+  if (!message && !imageUrl) {
+    return res.status(400).json({
+      message: "No message or image provided.",
+    });
+  }
 
   try {
     let aiText;
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // IMAGE CHAT → GEMINI
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (imageUrl) {
-      console.log("🖼️  Image detected — routing to Gemini");
-      aiText = await runImageChat(imageUrl, message, conversationHistory.slice(-20), userName);
-    } else {
+      console.log("🖼️ Image detected — routing to Gemini");
+
+      // Only send clean text messages to Gemini.
+      // Product cards and price cards are not useful as AI history.
+      const cleanHistory = conversationHistory
+        .filter(
+          (m) =>
+            (m.role === "user" || m.role === "assistant") &&
+            typeof m.content === "string" &&
+            m.content.trim()
+        )
+        .map((m) => ({
+          role: m.role,
+          content: m.content.trim(),
+        }))
+        .slice(-20);
+
+      aiText = await runImageChat(
+        imageUrl,
+        message,
+        cleanHistory,
+        userName
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TEXT CHAT → GROQ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    else {
       console.log("💬 Text message — routing to Groq");
+
+      // Only send actual text conversation to Groq.
+      // Product cards / price cards are NOT sent back to the model.
+      const cleanHistory = conversationHistory
+        .filter(
+          (m) =>
+            (m.role === "user" || m.role === "assistant") &&
+            typeof m.content === "string" &&
+            m.content.trim()
+        )
+        .map((m) => ({
+          role: m.role,
+          content: m.content.trim(),
+        }))
+        .slice(-20);
+
       const groqMessages = [
-        { role: "system", content: buildSystemPrompt(userName) },
-        ...conversationHistory.slice(-20).map((m) => ({
-          role:    m.role === "assistant" ? "assistant" : "user",
-          content: m.content,
-        })),
-        { role: "user", content: message },
+        {
+          role: "system",
+          content: buildSystemPrompt(userName),
+        },
+
+        ...cleanHistory,
+
+        {
+          role: "user",
+          content: String(message).trim(),
+        },
       ];
+
+      console.log(
+        "🧠 Groq history messages:",
+        cleanHistory.length
+      );
+
       aiText = await runTextChat(groqMessages);
     }
 
-    // ── Parse JSON actions ───────────────────────────────────────────────────
-    try {
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+    // ─────────────────────────────────────────────────────────────────────────
+    // IMAGE RESPONSE
+    //
+    // Gemini still returns normal text / JSON depending on the conversation.
+    // Try to parse it below, but if it isn't JSON, return it as normal text.
+    // ─────────────────────────────────────────────────────────────────────────
 
-       if (parsed.action === "search") {
-  const query = String(parsed.query || "").trim();
-  const category = String(parsed.category || "").trim();
-
-  const filter = {
-    status: "approved",
-  };
-
-  // Price filter
-  if (
-    parsed.maxPrice !== null &&
-    parsed.maxPrice !== undefined &&
-    Number(parsed.maxPrice) > 0
-  ) {
-    filter.sellingPrice = {
-      $lte: Number(parsed.maxPrice),
-    };
-  }
-
-  // ─────────────────────────────────────────────────────────────────────
-  // SEARCH TERMS
-  // ─────────────────────────────────────────────────────────────────────
-
-  const searchTerms = [];
-
-  if (query) {
-    searchTerms.push(query);
-  }
-
-  if (category) {
-    searchTerms.push(category);
-  }
-
-  // Add common product synonyms
-  const synonymMap = {
-    sneaker: ["sneaker", "sneakers", "shoe", "shoes", "footwear"],
-    sneakers: ["sneaker", "sneakers", "shoe", "shoes", "footwear"],
-
-    shoe: ["shoe", "shoes", "sneaker", "sneakers", "footwear"],
-    shoes: ["shoe", "shoes", "sneaker", "sneakers", "footwear"],
-
-    watch: ["watch", "watches"],
-    watches: ["watch", "watches"],
-
-    shirt: ["shirt", "shirts"],
-    shirts: ["shirt", "shirts"],
-
-    tshirt: ["tshirt", "tshirts", "t-shirt", "t-shirts", "tee"],
-    "t-shirt": ["tshirt", "tshirts", "t-shirt", "t-shirts", "tee"],
-
-    jeans: ["jeans", "denim"],
-
-    jacket: ["jacket", "jackets"],
-    jackets: ["jacket", "jackets"],
-
-    hoodie: ["hoodie", "hoodies", "sweatshirt", "sweatshirts"],
-    hoodies: ["hoodie", "hoodies", "sweatshirt", "sweatshirts"],
-  };
-
-  const termsToExpand = [...searchTerms];
-
-  termsToExpand.forEach((term) => {
-    const key = term.toLowerCase();
-
-    if (synonymMap[key]) {
-      searchTerms.push(...synonymMap[key]);
+    if (!aiText) {
+      return res.json({
+        type: "text",
+        message: "Sorry, I couldn't generate a response.",
+      });
     }
-  });
 
-  // Remove duplicate terms
-  const uniqueTerms = [...new Set(
-    searchTerms
-      .map((term) => term.trim())
-      .filter(Boolean)
-  )];
+    // ─────────────────────────────────────────────────────────────────────────
+    // PARSE STRUCTURED AI RESPONSE
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // Groq is using response_format: json_schema.
+    // Therefore aiText should already be a complete JSON string.
+    //
+    // We intentionally use JSON.parse(aiText) instead of regex extraction.
+    // ─────────────────────────────────────────────────────────────────────────
 
-  // ─────────────────────────────────────────────────────────────────────
-  // MONGODB SEARCH
-  // ─────────────────────────────────────────────────────────────────────
+    try {
+      const parsed = JSON.parse(aiText);
 
-  const searchConditions = uniqueTerms.flatMap((term) => {
-    const regex = {
-      $regex: term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-      $options: "i",
-    };
+      console.log("🤖 AI parsed response:", {
+        action: parsed.action,
+      });
 
-    return [
-      { title: regex },
-      { brand: regex },
-      { category: regex },
-      { description: regex },
-    ];
-  });
+      // ─────────────────────────────────────────────────────────────────────
+      // NORMAL TEXT RESPONSE
+      // ─────────────────────────────────────────────────────────────────────
 
-  if (searchConditions.length > 0) {
-    filter.$or = searchConditions;
-  }
-
-  const products = await Product.find(filter)
-    .limit(6)
-    .select("_id title brand sellingPrice images category condition size");
-
-  console.log("🔎 AI INVENTORY SEARCH:", {
-    query,
-    category,
-    maxPrice: parsed.maxPrice,
-    searchTerms: uniqueTerms,
-    results: products.length,
-  });
-
-  return res.json({
-    type: "products",
-    products,
-    message: products.length
-      ? `Found ${products.length} item${
-          products.length > 1 ? "s" : ""
-        } for "${query}" 🛍️`
-      : `No products found for "${query}". Try different keywords like the brand or category.`,
-  });
-}
-
-        if (parsed.action === "priceEstimate") {
-          if (!isPriceEstimateComplete(parsed)) {
-            return res.json({ type: "text", message: aiText });
-          }
-          return res.json({ type: "priceEstimate", data: parsed });
-        }
+      if (parsed.action === "text") {
+        return res.json({
+          type: "text",
+          message: parsed.message || "",
+        });
       }
-    } catch (_) {}
 
-    return res.json({ type: "text", message: aiText });
+      // ─────────────────────────────────────────────────────────────────────
+      // PRODUCT SEARCH
+      // ─────────────────────────────────────────────────────────────────────
+
+      if (parsed.action === "search") {
+        const query = String(parsed.query || "").trim();
+        const category = String(parsed.category || "").trim();
+
+        const filter = {
+          status: "approved",
+        };
+
+        // ───────────────────────────────────────────────────────────────
+        // PRICE FILTER
+        // ───────────────────────────────────────────────────────────────
+
+        if (
+          parsed.maxPrice !== null &&
+          parsed.maxPrice !== undefined &&
+          Number(parsed.maxPrice) > 0
+        ) {
+          filter.sellingPrice = {
+            $lte: Number(parsed.maxPrice),
+          };
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // SEARCH TERMS
+        // ───────────────────────────────────────────────────────────────
+
+        const searchTerms = [];
+
+        if (query) {
+          searchTerms.push(query);
+        }
+
+        if (category) {
+          searchTerms.push(category);
+        }
+
+        // Common product synonyms
+        const synonymMap = {
+          sneaker: [
+            "sneaker",
+            "sneakers",
+            "shoe",
+            "shoes",
+            "footwear",
+          ],
+
+          sneakers: [
+            "sneaker",
+            "sneakers",
+            "shoe",
+            "shoes",
+            "footwear",
+          ],
+
+          shoe: [
+            "shoe",
+            "shoes",
+            "sneaker",
+            "sneakers",
+            "footwear",
+          ],
+
+          shoes: [
+            "shoe",
+            "shoes",
+            "sneaker",
+            "sneakers",
+            "footwear",
+          ],
+
+          watch: [
+            "watch",
+            "watches",
+          ],
+
+          watches: [
+            "watch",
+            "watches",
+          ],
+
+          shirt: [
+            "shirt",
+            "shirts",
+          ],
+
+          shirts: [
+            "shirt",
+            "shirts",
+          ],
+
+          tshirt: [
+            "tshirt",
+            "tshirts",
+            "t-shirt",
+            "t-shirts",
+            "tee",
+          ],
+
+          "t-shirt": [
+            "tshirt",
+            "tshirts",
+            "t-shirt",
+            "t-shirts",
+            "tee",
+          ],
+
+          jeans: [
+            "jeans",
+            "denim",
+          ],
+
+          jacket: [
+            "jacket",
+            "jackets",
+          ],
+
+          jackets: [
+            "jacket",
+            "jackets",
+          ],
+
+          hoodie: [
+            "hoodie",
+            "hoodies",
+            "sweatshirt",
+            "sweatshirts",
+          ],
+
+          hoodies: [
+            "hoodie",
+            "hoodies",
+            "sweatshirt",
+            "sweatshirts",
+          ],
+        };
+
+        // ───────────────────────────────────────────────────────────────
+        // EXPAND SYNONYMS
+        // ───────────────────────────────────────────────────────────────
+
+        const termsToExpand = [...searchTerms];
+
+        termsToExpand.forEach((term) => {
+          const key = term.toLowerCase();
+
+          if (synonymMap[key]) {
+            searchTerms.push(...synonymMap[key]);
+          }
+        });
+
+        // Remove duplicates and empty values
+        const uniqueTerms = [
+          ...new Set(
+            searchTerms
+              .map((term) => term.trim())
+              .filter(Boolean)
+          ),
+        ];
+
+        // ───────────────────────────────────────────────────────────────
+        // MONGODB SEARCH CONDITIONS
+        // ───────────────────────────────────────────────────────────────
+
+        const searchConditions = uniqueTerms.flatMap((term) => {
+          const escapedTerm = term.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+
+          const regex = {
+            $regex: escapedTerm,
+            $options: "i",
+          };
+
+          return [
+            { title: regex },
+            { brand: regex },
+            { category: regex },
+            { description: regex },
+          ];
+        });
+
+        if (searchConditions.length > 0) {
+          filter.$or = searchConditions;
+        }
+
+        // ───────────────────────────────────────────────────────────────
+        // DATABASE SEARCH
+        // ───────────────────────────────────────────────────────────────
+
+        const products = await Product.find(filter)
+          .limit(6)
+          .select(
+            "_id title brand sellingPrice images category condition size"
+          );
+
+        console.log("🔎 AI INVENTORY SEARCH:", {
+          query,
+          category,
+          maxPrice: parsed.maxPrice,
+          searchTerms: uniqueTerms,
+          results: products.length,
+        });
+
+        return res.json({
+          type: "products",
+          products,
+
+          message: products.length
+            ? `Found ${products.length} item${
+                products.length > 1 ? "s" : ""
+              } for "${query}" 🛍️`
+            : `No products found for "${query}". Try different keywords like the brand or category.`,
+        });
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+      // PRICE ESTIMATE
+      // ─────────────────────────────────────────────────────────────────────
+
+      if (parsed.action === "priceEstimate") {
+        if (!isPriceEstimateComplete(parsed)) {
+          return res.json({
+            type: "text",
+            message:
+              parsed.message ||
+              "I need a little more information before I can estimate the price.",
+          });
+        }
+
+        return res.json({
+          type: "priceEstimate",
+          data: parsed,
+        });
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+      // UNKNOWN ACTION
+      // ─────────────────────────────────────────────────────────────────────
+
+      console.warn(
+        "⚠️ Unknown AI action:",
+        parsed.action
+      );
+
+      return res.json({
+        type: "text",
+        message:
+          parsed.message ||
+          "Sorry, I couldn't understand that request.",
+      });
+
+    } catch (parseError) {
+      // ─────────────────────────────────────────────────────────────────────
+      // JSON PARSE FAILED
+      // ─────────────────────────────────────────────────────────────────────
+
+      console.error(
+        "❌ AI Response Parse Error:",
+        parseError.message
+      );
+
+      console.error(
+        "🤖 Raw AI Response:",
+        aiText
+      );
+
+      // If Gemini returned normal text instead of JSON,
+      // don't show the JSON parsing error to the user.
+      return res.json({
+        type: "text",
+        message: aiText,
+      });
+    }
 
   } catch (err) {
-    console.error("AI Chat Error:", err.message);
-    const isQuota = err?.message === "QUOTA_EXHAUSTED" || err?.message?.includes("quota");
-    res.status(isQuota ? 503 : 500).json({
+    // ─────────────────────────────────────────────────────────────────────────
+    // MAIN ERROR HANDLER
+    // ─────────────────────────────────────────────────────────────────────────
+
+    console.error(
+      "❌ AI Chat Error:",
+      err.message
+    );
+
+    if (err?.status) {
+      console.error(
+        "❌ AI Error Status:",
+        err.status
+      );
+    }
+
+    if (err?.response?.data) {
+      console.error(
+        "❌ AI Provider Error:",
+        JSON.stringify(err.response.data)
+      );
+    }
+
+    const errorMessage =
+      String(err?.message || "").toLowerCase();
+
+    const isQuota =
+      err?.message === "QUOTA_EXHAUSTED" ||
+      errorMessage.includes("quota") ||
+      errorMessage.includes("rate limit") ||
+      errorMessage.includes("too many requests") ||
+      err?.status === 429;
+
+    return res.status(isQuota ? 503 : 500).json({
       message: isQuota
         ? "AI is taking a short break. Please try again in a few minutes ☕"
         : "AI service temporarily unavailable",
