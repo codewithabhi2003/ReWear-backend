@@ -26,8 +26,7 @@ const rotateKey = () => {
 };
 
 const MODEL_CHAIN = [
-  'openai/gpt-oss-20b',
-  'openai/gpt-oss-120b',
+  'llama-3.3-70b-versatile',
 ];
 
 const isQuotaError = (err) =>

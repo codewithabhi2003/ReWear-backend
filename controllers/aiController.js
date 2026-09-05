@@ -128,7 +128,6 @@ const runTextChat = async (messages) =>
       messages,
       max_completion_tokens: 700,
       temperature: 0.2,
-      include_reasoning: false,
     });
 
     return completion.choices[0]?.message?.content?.trim() || "";
