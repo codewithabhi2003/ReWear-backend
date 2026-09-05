@@ -7,236 +7,676 @@ const cloudinary = require("../config/cloudinary");
 const uploadToCloudinary = (buffer) =>
   new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder: "rewear/ai-chat", resource_type: "image" },
+      {
+        folder: "rewear/ai-chat",
+        resource_type: "image",
+      },
       (err, result) => (err ? reject(err) : resolve(result))
     );
+
     Readable.from(buffer).pipe(stream);
   });
 
-// ── Base system prompt ────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are ReWear AI — a smart, friendly assistant for ReWear, a pre-loved branded fashion marketplace in India. Prices are always in ₹.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYSTEM PROMPT
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are ReWear AI — a smart, friendly assistant for ReWear, a pre-loved branded fashion marketplace in India.
+
+Prices are always in Indian Rupees (₹).
+
+IMPORTANT AI BEHAVIOR:
+- You do NOT have access to tools, functions, APIs, databases, or external systems.
+- NEVER call a tool.
+- NEVER generate a tool call.
+- NEVER use tool_calls.
+- NEVER pretend that you searched the database.
+- The backend application performs all database and inventory searches.
+- Your job is to understand the user's request and return the correct response format.
+- For product searches, return ONLY the required JSON object as plain text.
+- Do NOT use Markdown code fences.
+- Do NOT add explanations before or after search JSON.
+- Never invent products, prices, brands, or inventory.
 
 ━━━ MODE 1: PRODUCT SEARCH ━━━
-When user describes what they want to buy, output ONLY this JSON:
+
+When the user describes something they want to buy, return ONLY this JSON:
+
 {"action":"search","query":"<term>","maxPrice":<number|null>,"category":"<category|null>"}
-- For vague requests like "something nice for college" or "casual outfit", pick the most relevant search term.
-- If no results, suggest trying a different brand, category, or relaxing the price filter.
-- Never invent products — only search the real database.
+
+The backend will use this information to search the real ReWear product database.
+
+SEARCH RULES:
+
+1. query:
+Use the most useful keyword or brand from the user's request.
+
+2. maxPrice:
+If the user gives a maximum price, return it as a number.
+If there is no maximum price, return null.
+
+3. category:
+Use a simple product category such as:
+- shoes
+- sneakers
+- shirts
+- t-shirts
+- jeans
+- jackets
+- dresses
+- hoodies
+- pants
+- accessories
+
+If the category is unclear, return null.
+
+4. Never invent products.
+
+5. Never say that a product is available.
+
+6. Never perform a database search yourself.
+
+7. The backend will perform the actual inventory search after receiving your JSON.
+
+Examples:
+
+User:
+Find me sneakers under ₹1500
+
+Return ONLY:
+{"action":"search","query":"sneakers","maxPrice":1500,"category":"shoes"}
+
+User:
+I want Nike shoes
+
+Return ONLY:
+{"action":"search","query":"Nike","maxPrice":null,"category":"shoes"}
+
+User:
+Show me Adidas sneakers below 3000
+
+Return ONLY:
+{"action":"search","query":"Adidas","maxPrice":3000,"category":"shoes"}
+
+User:
+I need jeans under 2000
+
+Return ONLY:
+{"action":"search","query":"jeans","maxPrice":2000,"category":"jeans"}
+
+User:
+Find something nice for college under 2500
+
+Return ONLY:
+{"action":"search","query":"casual college wear","maxPrice":2500,"category":null}
+
+User:
+Show me Zara clothes
+
+Return ONLY:
+{"action":"search","query":"Zara","maxPrice":null,"category":null}
+
+IMPORTANT:
+For every product-search request, return plain JSON only.
+
+Do not write:
+"Sure! Here are some products..."
+
+Do not write:
+"I'll search for you..."
+
+Do not write:
+"Let me check..."
+
+Only return the JSON object.
 
 ━━━ MODE 2: PRICE ESTIMATOR ━━━
-Help user estimate resale value of an item they want to sell.
-Ask questions ONE AT A TIME in this exact order (skip any already answered):
-  a) "What was the original purchase price? (in ₹)"
-  b) "How long have you used it? (e.g. 6 months, 2 years)"
-  c) "How often did you use it? (daily / weekly / rarely)"
-  d) "Any visible damage? (tears, stains, fading, or none)"
 
-Once you have ALL FOUR answers, output ONLY this JSON (no extra text):
-{"action":"priceEstimate","item":"<n>","originalPrice":<number>,"usageDuration":"<text>","usageFrequency":"<text>","damage":"<text>","estimatedPrice":<number>,"breakdown":{"baseDepreciation":"<e.g. 45% depreciation after 1 year of weekly use>","conditionAdjustment":"<e.g. Minor fading reduces value by 10%>","brandMultiplier":"<e.g. Zara holds resale value well, no penalty>"}}
+Help the user estimate the resale value of an item they want to sell.
 
-Price estimate rules:
-- Never output the priceEstimate JSON unless ALL FOUR fields are known.
-- If user gives all info at once, estimate immediately without asking questions.
-- Once a price card is shown, never output the priceEstimate JSON again for the same item unless user explicitly says "re-estimate" or gives new details.
-- If user disagrees with the estimate, acknowledge it in plain text and explain your reasoning briefly. Do not re-render the card.
-- If user says they will sell at a higher price than your estimate, respect their decision. Give a brief honest opinion (e.g. "Market rate is ₹3500 but listing at ₹5000 is fine — it may take longer to sell") but never re-estimate or output the JSON again.
-- If user mentions limited edition, rare collab, or premium condition, factor it in and explain in plain text — do not re-render the card unless they ask.
-- Consider brand value: premium brands (Nike, Adidas, Zara, H&M, Levi's, etc.) depreciate slower than no-name brands.
+Ask questions ONE AT A TIME in this exact order.
+
+Skip any question that has already been answered.
+
+a) "What was the original purchase price? (in ₹)"
+
+b) "How long have you used it? (e.g. 6 months, 2 years)"
+
+c) "How often did you use it? (daily / weekly / rarely)"
+
+d) "Any visible damage? (tears, stains, fading, or none)"
+
+Once you have ALL FOUR answers, output ONLY this JSON:
+
+{"action":"priceEstimate","item":"<name>","originalPrice":<number>,"usageDuration":"<text>","usageFrequency":"<text>","damage":"<text>","estimatedPrice":<number>,"breakdown":{"baseDepreciation":"<text>","conditionAdjustment":"<text>","brandMultiplier":"<text>"}}
+
+PRICE ESTIMATE RULES:
+
+- Never output priceEstimate JSON unless ALL FOUR required fields are known.
+- If the user gives all information at once, estimate immediately.
+- Once a price card is shown, never output the priceEstimate JSON again for the same item unless the user explicitly says "re-estimate" or gives new details.
+- If the user disagrees with the estimate, acknowledge it in plain text and briefly explain your reasoning.
+- Do not re-render the price card unless explicitly requested.
+- If the user says they will sell at a higher price than your estimate, respect their decision.
+- Give a brief honest opinion if appropriate.
+- Never automatically re-estimate.
+- If the user mentions limited edition, rare collaboration, or premium condition, factor it into your reasoning.
+- Consider brand value.
+- Premium brands such as Nike, Adidas, Zara, H&M and Levi's generally retain resale value better than no-name brands.
 
 ━━━ MODE 3: PLATFORM GUIDE ━━━
+
 Answer questions about ReWear in 2–3 friendly sentences.
 
 LISTING:
-- Go to Seller Dashboard → List Product → upload photos, fill brand/price/size/condition → submit for admin verification → goes live once approved.
+
+- Go to Seller Dashboard → List Product.
+- Upload photos.
+- Fill brand, price, size and condition.
+- Submit for admin verification.
+- The product goes live once approved.
 - Listings are typically verified within 24 hours.
-- If listing is rejected, you'll get a reason — fix it and resubmit.
+- If listing is rejected, the user receives a reason.
 - To edit or delete a listing, go to Seller Dashboard → My Listings.
 
 NEGOTIATION:
-- Open any product → tap Chat → tap 🏷️ Negotiate → drag slider to your offer price → send.
-- Seller can accept, counter, or decline.
-- If offer expires with no response, feel free to send a new one.
-- As a seller, if the offer is too low, always counter rather than ignore — it builds trust.
+
+- Open any product → tap Chat → tap 🏷️ Negotiate.
+- Drag the slider to your offer price.
+- Send the offer.
+- Seller can accept, counter or decline.
+- If an offer expires without a response, the buyer can send a new offer.
+- Sellers should counter rather than ignore an offer when appropriate.
 
 PAYMENT:
-- After a deal is agreed in chat → tap Pay → 3-step checkout: address → review → Razorpay.
-- Supported: UPI, cards, net banking, wallets via Razorpay.
+
+- After a deal is agreed in chat → tap Pay.
+- Checkout has 3 steps:
+  1. Address
+  2. Review
+  3. Razorpay
+- Supported payment methods include UPI, cards, net banking and wallets via Razorpay.
 - If payment fails, retry from My Orders or contact support.
 - Sellers receive payment after the buyer confirms delivery.
 
 ORDERS & DELIVERY:
-- Track orders at My Orders: Pending → Confirmed → Packed → Shipped → Delivered.
-- If order is stuck on a status for too long, contact support via the Help section.
-- If wrong item received or item not as described, raise a dispute from My Orders within 48 hours of delivery.
-- If order shows delivered but wasn't received, report it immediately from My Orders.
-- Returns and refunds are handled case by case — raise a dispute and the ReWear team will review.
+
+- Track orders at My Orders.
+- Statuses:
+  Pending → Confirmed → Packed → Shipped → Delivered
+- If an order is stuck for too long, contact support through Help.
+- If the wrong item is received or the item is not as described, raise a dispute from My Orders within 48 hours of delivery.
+- If an order shows delivered but was not received, report it immediately.
+- Returns and refunds are handled case by case.
 
 ACCOUNT & TRUST:
-- To report a fake listing or scammer: tap 🚩 flag icon in navbar or use the Report link in the footer.
-- If you've been scammed, report immediately via 🚩 and contact support — never send money outside the platform.
-- To block a user, go to their profile → tap ⋮ → Block.
-- Privacy policy is at /privacy-policy — your data is never sold to third parties.
-- Notifications are shown via the 🔔 bell icon in the top bar.
+
+- To report a fake listing or scammer, use the 🚩 flag icon in the navbar or Report link in the footer.
+- If scammed, report immediately and contact support.
+- Never send money outside ReWear.
+- To block a user, go to their profile → ⋮ → Block.
+- Privacy policy is available at /privacy-policy.
+- Notifications are shown through the 🔔 bell icon.
 
 ━━━ EDGE CASES & EMOTIONAL HANDLING ━━━
-- If user is frustrated or angry, stay calm, empathetic, and solution-focused. Acknowledge their frustration first before giving info.
-- If user asks something off-topic (weather, jokes, general knowledge), politely say you're here for fashion and ReWear help, and redirect.
-- If user asks "are you real?" or "are you a bot?", say you're ReWear AI — a virtual assistant — and offer to help.
-- If user asks you to place an order, process a payment, or take any action on their account, explain you can only guide them and they need to do it themselves in the app.
-- If user gives contradictory info (e.g. says item is new but also heavily used), gently point it out and ask to clarify.
-- If user keeps repeating the same question, give the same answer patiently without showing frustration.
-- If user asks about a cancelled, refunded, or disputed order, guide them to My Orders and the Help/Support section.
+
+- If the user is frustrated or angry, stay calm, empathetic and solution-focused.
+- If the user asks something completely off-topic, politely explain that you specialize in fashion and ReWear and redirect them.
+- If the user asks "are you real?" or "are you a bot?", say you are ReWear AI — a virtual assistant.
+- If the user asks you to place an order, process payment or perform an account action, explain that you can only guide them and they need to do it themselves in the app.
+- If the user gives contradictory information, point it out gently and ask for clarification.
+- If the user repeats a question, answer patiently.
+- If the user asks about a cancelled, refunded or disputed order, guide them to My Orders and Help/Support.
 
 ━━━ GENERAL RULES ━━━
-- Always reply in the same language the user is using. If they switch languages mid-conversation, switch with them.
-- Remember the full conversation — never ask for info the user already gave.
-- Be warm, concise, and fashion-aware. Max 3–4 sentences for guide answers unless more detail is needed.
-- For searches and complete price estimates, output ONLY the JSON — no extra text.
-- Never make up features, policies, or products that don't exist on ReWear.`;
 
-// ── Inject user name into prompt ──────────────────────────────────────────────
+- Always reply in the same language the user is using.
+- If the user switches languages, switch with them.
+- Remember the conversation history.
+- Never ask for information the user already provided.
+- Be warm, concise and fashion-aware.
+- Guide answers should normally be 2–4 sentences.
+- Product searches MUST return ONLY the search JSON.
+- Complete price estimates MUST return ONLY the priceEstimate JSON.
+- Never invent ReWear features, policies or products.
+
+FINAL REMINDER:
+
+You have NO tools.
+
+You have NO database access.
+
+You have NO inventory access.
+
+NEVER call a tool.
+
+NEVER generate a tool call.
+
+For product searches, return ONLY plain JSON so the ReWear backend can perform the actual database search.`;
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUILD SYSTEM PROMPT
+// ─────────────────────────────────────────────────────────────────────────────
+
 const buildSystemPrompt = (name) => {
   const greeting = name
-    ? `\n\nThe user's name is ${name}. Greet them by name naturally at the start of a conversation or when it feels friendly — but don't force it into every message.`
-    : '';
+    ? `
+
+The user's name is ${name}. Greet them by name naturally at the start of a conversation or when it feels friendly. Do not force their name into every message.`
+    : "";
+
   return `${SYSTEM_PROMPT}${greeting}`;
 };
 
-// ── Upload image ──────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UPLOAD IMAGE
+// ─────────────────────────────────────────────────────────────────────────────
+
 const uploadAIImage = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+    if (!req.file) {
+      return res.status(400).json({
+        message: "No file uploaded",
+      });
+    }
+
     const result = await uploadToCloudinary(req.file.buffer);
-    res.json({ imageUrl: result.secure_url });
+
+    res.json({
+      imageUrl: result.secure_url,
+    });
   } catch (err) {
     console.error("AI Image Upload Error:", err.message);
-    res.status(500).json({ message: "Image upload failed", error: err.message });
+
+    res.status(500).json({
+      message: "Image upload failed",
+      error: err.message,
+    });
   }
 };
 
-// ── Text chat via Groq ────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEXT CHAT VIA GROQ
+// ─────────────────────────────────────────────────────────────────────────────
+
 const runTextChat = async (messages) =>
   runGroq(async (groq, modelName) => {
     const completion = await groq.chat.completions.create({
-      model:       modelName,
+      model: modelName,
       messages,
-      max_tokens:  400,
-      temperature: 0.6,
+
+      // GPT-OSS uses completion token limits.
+      max_completion_tokens: 500,
+
+      // Lower temperature makes JSON output more reliable.
+      temperature: 0.3,
+
+      // We are NOT using Groq function/tool calling.
+      // Product searching is handled by our backend.
+      tool_choice: "none",
+
+      // We don't need reasoning text for this application.
+      include_reasoning: false,
     });
-    return completion.choices[0]?.message?.content?.trim() || "";
+
+    const content = completion.choices[0]?.message?.content;
+
+    return content?.trim() || "";
   });
 
-// ── Image chat via Gemini ─────────────────────────────────────────────────────
-const runImageChat = async (imageUrl, message, history, userName) =>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMAGE CHAT VIA GEMINI
+// ─────────────────────────────────────────────────────────────────────────────
+
+const runImageChat = async (
+  imageUrl,
+  message,
+  history,
+  userName
+) =>
   runGemini(async (model) => {
     const response = await fetch(imageUrl);
-    if (!response.ok) throw new Error("Failed to fetch image");
-    const base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
-    const mimeType   = response.headers.get("content-type") || "image/jpeg";
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch image");
+    }
+
+    const base64Data = Buffer.from(
+      await response.arrayBuffer()
+    ).toString("base64");
+
+    const mimeType =
+      response.headers.get("content-type") || "image/jpeg";
 
     const chat = model.startChat({
       history: [
-        { role: "user",  parts: [{ text: buildSystemPrompt(userName) }] },
-        { role: "model", parts: [{ text: "Understood! I'm ReWear AI, ready to help." }] },
+        {
+          role: "user",
+          parts: [
+            {
+              text: buildSystemPrompt(userName),
+            },
+          ],
+        },
+
+        {
+          role: "model",
+          parts: [
+            {
+              text: "Understood! I'm ReWear AI, ready to help.",
+            },
+          ],
+        },
+
         ...history.map((m) => ({
-          role:  m.role === "assistant" ? "model" : "user",
-          parts: [{ text: m.content }],
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [
+            {
+              text: m.content,
+            },
+          ],
         })),
       ],
     });
 
     const result = await chat.sendMessage([
-      { inlineData: { data: base64Data, mimeType } },
-      { text: message || "What is this item? Help me estimate its resale price." },
+      {
+        inlineData: {
+          data: base64Data,
+          mimeType,
+        },
+      },
+
+      {
+        text:
+          message ||
+          "What is this item? Help me estimate its resale price.",
+      },
     ]);
+
     return result.response.text().trim();
   });
 
-// ── Guard: only render price card if all fields are present ───────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRICE ESTIMATE VALIDATION
+// ─────────────────────────────────────────────────────────────────────────────
+
 const isPriceEstimateComplete = (parsed) => {
-  const unknown = (v) => !v || v === "unknown" || v === "null" || v === "undefined";
+  const unknown = (value) =>
+    !value ||
+    value === "unknown" ||
+    value === "null" ||
+    value === "undefined";
+
   return (
-    parsed.originalPrice > 0 &&
-    parsed.estimatedPrice > 0 &&
+    Number(parsed.originalPrice) > 0 &&
+    Number(parsed.estimatedPrice) > 0 &&
     !unknown(parsed.usageDuration) &&
     !unknown(parsed.usageFrequency) &&
     !unknown(parsed.damage)
   );
 };
 
-// ── Main AI chat handler ──────────────────────────────────────────────────────
-const handleAIChat = async (req, res) => {
-  const { message, imageUrl, conversationHistory = [], userName } = req.body;
 
-  if (!message && !imageUrl)
-    return res.status(400).json({ message: "No message or image provided." });
+// ─────────────────────────────────────────────────────────────────────────────
+// SAFE JSON EXTRACTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+const extractJSON = (text) => {
+  if (!text || typeof text !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text.trim());
+  } catch (_) {
+    // Continue below and try extracting an object.
+  }
+
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+  if (!jsonMatch) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (_) {
+    return null;
+  }
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN AI CHAT HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
+
+const handleAIChat = async (req, res) => {
+  const {
+    message,
+    imageUrl,
+    conversationHistory = [],
+    userName,
+  } = req.body;
+
+  if (!message && !imageUrl) {
+    return res.status(400).json({
+      message: "No message or image provided.",
+    });
+  }
 
   try {
     let aiText;
 
+    // ───────────────────────────────────────────────────────────────────────
+    // IMAGE → GEMINI
+    // ───────────────────────────────────────────────────────────────────────
+
     if (imageUrl) {
-      console.log("🖼️  Image detected — routing to Gemini");
-      aiText = await runImageChat(imageUrl, message, conversationHistory.slice(-20), userName);
-    } else {
+      console.log("🖼️ Image detected — routing to Gemini");
+
+      aiText = await runImageChat(
+        imageUrl,
+        message,
+        conversationHistory.slice(-20),
+        userName
+      );
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // TEXT → GROQ
+    // ───────────────────────────────────────────────────────────────────────
+
+    else {
       console.log("💬 Text message — routing to Groq");
+
       const groqMessages = [
-        { role: "system", content: buildSystemPrompt(userName) },
+        {
+          role: "system",
+          content: buildSystemPrompt(userName),
+        },
+
         ...conversationHistory.slice(-20).map((m) => ({
-          role:    m.role === "assistant" ? "assistant" : "user",
+          role:
+            m.role === "assistant"
+              ? "assistant"
+              : "user",
           content: m.content,
         })),
-        { role: "user", content: message },
+
+        {
+          role: "user",
+          content: message,
+        },
       ];
+
       aiText = await runTextChat(groqMessages);
     }
 
-    // ── Parse JSON actions ───────────────────────────────────────────────────
-    try {
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
 
-        if (parsed.action === "search") {
-          const query  = parsed.query || "";
-          const filter = { status: "approved" };
-          if (parsed.maxPrice) filter.sellingPrice = { $lte: Number(parsed.maxPrice) };
-          if (parsed.category) filter.category     = { $regex: parsed.category, $options: "i" };
+    console.log("🤖 AI response:", aiText);
 
-          const products = await Product.find({
-            ...filter,
-            $or: [
-              { title:       { $regex: query, $options: "i" } },
-              { brand:       { $regex: query, $options: "i" } },
-              { category:    { $regex: query, $options: "i" } },
-              { description: { $regex: query, $options: "i" } },
-            ],
-          })
-            .limit(6)
-            .select("_id title brand sellingPrice images category condition size");
 
+    // ───────────────────────────────────────────────────────────────────────
+    // PARSE AI JSON ACTION
+    // ───────────────────────────────────────────────────────────────────────
+
+    const parsed = extractJSON(aiText);
+
+    if (parsed) {
+
+      // ─────────────────────────────────────────────────────────────────────
+      // PRODUCT SEARCH
+      // ─────────────────────────────────────────────────────────────────────
+
+      if (parsed.action === "search") {
+
+        const query = String(
+          parsed.query || ""
+        ).trim();
+
+        const filter = {
+          status: "approved",
+        };
+
+        // Maximum selling price
+        if (
+          parsed.maxPrice !== null &&
+          parsed.maxPrice !== undefined &&
+          Number(parsed.maxPrice) > 0
+        ) {
+          filter.sellingPrice = {
+            $lte: Number(parsed.maxPrice),
+          };
+        }
+
+        // Category
+        if (
+          parsed.category &&
+          parsed.category !== "null"
+        ) {
+          filter.category = {
+            $regex: String(parsed.category),
+            $options: "i",
+          };
+        }
+
+        // ───────────────────────────────────────────────────────────────────
+        // SEARCH REAL MONGODB INVENTORY
+        // ───────────────────────────────────────────────────────────────────
+
+        const searchConditions = [];
+
+        if (query) {
+          searchConditions.push(
+            {
+              title: {
+                $regex: query,
+                $options: "i",
+              },
+            },
+            {
+              brand: {
+                $regex: query,
+                $options: "i",
+              },
+            },
+            {
+              category: {
+                $regex: query,
+                $options: "i",
+              },
+            },
+            {
+              description: {
+                $regex: query,
+                $options: "i",
+              },
+            }
+          );
+        }
+
+        const products = await Product.find({
+          ...filter,
+
+          ...(searchConditions.length
+            ? { $or: searchConditions }
+            : {}),
+        })
+          .limit(6)
+          .select(
+            "_id title brand sellingPrice images category condition size"
+          );
+
+        console.log(
+          `🔎 Inventory search: "${query}" | ` +
+          `maxPrice: ${parsed.maxPrice} | ` +
+          `category: ${parsed.category} | ` +
+          `results: ${products.length}`
+        );
+
+        return res.json({
+          type: "products",
+
+          products,
+
+          message: products.length
+            ? `Found ${products.length} item${
+                products.length > 1 ? "s" : ""
+              } for "${query}" 🛍️`
+            : `No products found for "${query}". Try different keywords like the brand or category.`,
+        });
+      }
+
+
+      // ─────────────────────────────────────────────────────────────────────
+      // PRICE ESTIMATE
+      // ─────────────────────────────────────────────────────────────────────
+
+      if (parsed.action === "priceEstimate") {
+
+        if (!isPriceEstimateComplete(parsed)) {
           return res.json({
-            type:     "products",
-            products,
-            message:  products.length
-              ? `Found ${products.length} item${products.length > 1 ? "s" : ""} for "${query}" 🛍️`
-              : `No products found for "${query}". Try different keywords like the brand or category.`,
+            type: "text",
+            message: aiText,
           });
         }
 
-        if (parsed.action === "priceEstimate") {
-          if (!isPriceEstimateComplete(parsed)) {
-            return res.json({ type: "text", message: aiText });
-          }
-          return res.json({ type: "priceEstimate", data: parsed });
-        }
+        return res.json({
+          type: "priceEstimate",
+          data: parsed,
+        });
       }
-    } catch (_) {}
+    }
 
-    return res.json({ type: "text", message: aiText });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // NORMAL TEXT RESPONSE
+    // ─────────────────────────────────────────────────────────────────────────
+
+    return res.json({
+      type: "text",
+      message: aiText,
+    });
 
   } catch (err) {
-    console.error("AI Chat Error:", err.message);
-    const isQuota = err?.message === "QUOTA_EXHAUSTED" || err?.message?.includes("quota");
+
+    console.error(
+      "AI Chat Error:",
+      err?.message || err
+    );
+
+    const isQuota =
+      err?.message === "QUOTA_EXHAUSTED" ||
+      err?.message?.toLowerCase?.().includes("quota") ||
+      err?.status === 429;
+
     res.status(isQuota ? 503 : 500).json({
       message: isQuota
         ? "AI is taking a short break. Please try again in a few minutes ☕"
@@ -245,4 +685,12 @@ const handleAIChat = async (req, res) => {
   }
 };
 
-module.exports = { handleAIChat, uploadAIImage };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+module.exports = {
+  handleAIChat,
+  uploadAIImage,
+};
