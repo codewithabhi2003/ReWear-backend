@@ -56,7 +56,7 @@ LISTING:
 - Go to Seller Dashboard → List Product → upload photos, fill brand/price/size/condition → submit for admin verification → goes live once approved.
 - Listings are typically verified within 24 hours.
 - If listing is rejected, you'll get a reason — fix it and resubmit.
-- To edit or delete a listing, go to Seller Dashboard → My Listings.
+- To edit or delete your listing, go to Seller Dashboard → My Listings.
 
 NEGOTIATION:
 - Open any product → tap Chat → tap 🏷️ Negotiate → drag slider to your offer price → send.
@@ -105,18 +105,31 @@ const buildSystemPrompt = (name) => {
   const greeting = name
     ? `\n\nThe user's name is ${name}. Greet them by name naturally at the start of a conversation or when it feels friendly — but don't force it into every message.`
     : '';
+
   return `${SYSTEM_PROMPT}${greeting}`;
 };
 
 // ── Upload image ──────────────────────────────────────────────────────────────
 const uploadAIImage = async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+    if (!req.file) {
+      return res.status(400).json({
+        message: "No file uploaded",
+      });
+    }
+
     const result = await uploadToCloudinary(req.file.buffer);
-    res.json({ imageUrl: result.secure_url });
+
+    res.json({
+      imageUrl: result.secure_url,
+    });
   } catch (err) {
     console.error("AI Image Upload Error:", err.message);
-    res.status(500).json({ message: "Image upload failed", error: err.message });
+
+    res.status(500).json({
+      message: "Image upload failed",
+      error: err.message,
+    });
   }
 };
 
@@ -132,35 +145,72 @@ const runTextChat = async (messages) =>
 
     return completion.choices[0]?.message?.content?.trim() || "";
   });
+
 // ── Image chat via Gemini ─────────────────────────────────────────────────────
 const runImageChat = async (imageUrl, message, history, userName) =>
   runGemini(async (model) => {
     const response = await fetch(imageUrl);
-    if (!response.ok) throw new Error("Failed to fetch image");
-    const base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
-    const mimeType   = response.headers.get("content-type") || "image/jpeg";
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch image");
+    }
+
+    const base64Data = Buffer.from(
+      await response.arrayBuffer()
+    ).toString("base64");
+
+    const mimeType =
+      response.headers.get("content-type") || "image/jpeg";
 
     const chat = model.startChat({
       history: [
-        { role: "user",  parts: [{ text: buildSystemPrompt(userName) }] },
-        { role: "model", parts: [{ text: "Understood! I'm ReWear AI, ready to help." }] },
+        {
+          role: "user",
+          parts: [{ text: buildSystemPrompt(userName) }],
+        },
+
+        {
+          role: "model",
+          parts: [
+            {
+              text: "Understood! I'm ReWear AI, ready to help.",
+            },
+          ],
+        },
+
         ...history.map((m) => ({
-          role:  m.role === "assistant" ? "model" : "user",
+          role: m.role === "assistant" ? "model" : "user",
           parts: [{ text: m.content }],
         })),
       ],
     });
 
     const result = await chat.sendMessage([
-      { inlineData: { data: base64Data, mimeType } },
-      { text: message || "What is this item? Help me estimate its resale price." },
+      {
+        inlineData: {
+          data: base64Data,
+          mimeType,
+        },
+      },
+
+      {
+        text:
+          message ||
+          "What is this item? Help me estimate its resale price.",
+      },
     ]);
+
     return result.response.text().trim();
   });
 
 // ── Guard: only render price card if all fields are present ───────────────────
 const isPriceEstimateComplete = (parsed) => {
-  const unknown = (v) => !v || v === "unknown" || v === "null" || v === "undefined";
+  const unknown = (v) =>
+    !v ||
+    v === "unknown" ||
+    v === "null" ||
+    v === "undefined";
+
   return (
     parsed.originalPrice > 0 &&
     parsed.estimatedPrice > 0 &&
@@ -168,6 +218,318 @@ const isPriceEstimateComplete = (parsed) => {
     !unknown(parsed.usageFrequency) &&
     !unknown(parsed.damage)
   );
+};
+
+// ── Detect obvious product searches locally ──────────────────────────────────
+const detectProductSearch = (message) => {
+  const text = String(message || "")
+    .toLowerCase()
+    .trim();
+
+  if (!text) {
+    return null;
+  }
+
+  const productPatterns = [
+    {
+      query: "sneakers",
+      keywords: ["sneaker", "sneakers"],
+    },
+
+    {
+      query: "shoes",
+      keywords: ["shoe", "shoes", "footwear"],
+    },
+
+    {
+      query: "watches",
+      keywords: ["watch", "watches"],
+    },
+
+    {
+      query: "shirts",
+      keywords: ["shirt", "shirts"],
+    },
+
+    {
+      query: "tshirts",
+      keywords: [
+        "tshirt",
+        "tshirts",
+        "t-shirt",
+        "t-shirts",
+      ],
+    },
+
+    {
+      query: "jeans",
+      keywords: ["jean", "jeans", "denim"],
+    },
+
+    {
+      query: "jackets",
+      keywords: ["jacket", "jackets"],
+    },
+
+    {
+      query: "hoodies",
+      keywords: [
+        "hoodie",
+        "hoodies",
+        "sweatshirt",
+        "sweatshirts",
+      ],
+    },
+  ];
+
+  const matched = productPatterns.find((product) =>
+    product.keywords.some((keyword) => {
+      const regex = new RegExp(
+        `\\b${keyword.replace("-", "\\-")}\\b`,
+        "i"
+      );
+
+      return regex.test(text);
+    })
+  );
+
+  if (!matched) {
+    return null;
+  }
+
+  // ₹1500 / ₹ 1500 / Rs 1500 / rs. 1500 / 1500
+  const priceMatch = text.match(
+    /(?:₹|rs\.?|inr)?\s*(\d[\d,]*)\s*(?:rupees?)?/i
+  );
+
+  let maxPrice = null;
+
+  if (
+    priceMatch &&
+    (
+      text.includes("under") ||
+      text.includes("below") ||
+      text.includes("less than") ||
+      text.includes("upto") ||
+      text.includes("up to") ||
+      text.includes("within") ||
+      text.includes("budget")
+    )
+  ) {
+    maxPrice = Number(
+      priceMatch[1].replace(/,/g, "")
+    );
+  }
+
+  return {
+    query: matched.query,
+    maxPrice,
+    category: null,
+  };
+};
+
+// ── Search products ──────────────────────────────────────────────────────────
+const searchProducts = async ({
+  query,
+  category,
+  maxPrice,
+}) => {
+  const filter = {
+    status: "approved",
+  };
+
+  if (
+    maxPrice !== null &&
+    maxPrice !== undefined &&
+    Number(maxPrice) > 0
+  ) {
+    filter.sellingPrice = {
+      $lte: Number(maxPrice),
+    };
+  }
+
+  const searchTerms = [];
+
+  if (query) {
+    searchTerms.push(query);
+  }
+
+  if (category) {
+    searchTerms.push(category);
+  }
+
+  const synonymMap = {
+    sneaker: [
+      "sneaker",
+      "sneakers",
+      "shoe",
+      "shoes",
+      "footwear",
+    ],
+
+    sneakers: [
+      "sneaker",
+      "sneakers",
+      "shoe",
+      "shoes",
+      "footwear",
+    ],
+
+    shoe: [
+      "shoe",
+      "shoes",
+      "sneaker",
+      "sneakers",
+      "footwear",
+    ],
+
+    shoes: [
+      "shoe",
+      "shoes",
+      "sneaker",
+      "sneakers",
+      "footwear",
+    ],
+
+    watch: [
+      "watch",
+      "watches",
+    ],
+
+    watches: [
+      "watch",
+      "watches",
+    ],
+
+    shirt: [
+      "shirt",
+      "shirts",
+    ],
+
+    shirts: [
+      "shirt",
+      "shirts",
+    ],
+
+    tshirt: [
+      "tshirt",
+      "tshirts",
+      "t-shirt",
+      "t-shirts",
+      "tee",
+    ],
+
+    tshirts: [
+      "tshirt",
+      "tshirts",
+      "t-shirt",
+      "t-shirts",
+      "tee",
+    ],
+
+    "t-shirt": [
+      "tshirt",
+      "tshirts",
+      "t-shirt",
+      "t-shirts",
+      "tee",
+    ],
+
+    jeans: [
+      "jeans",
+      "denim",
+    ],
+
+    jacket: [
+      "jacket",
+      "jackets",
+    ],
+
+    jackets: [
+      "jacket",
+      "jackets",
+    ],
+
+    hoodie: [
+      "hoodie",
+      "hoodies",
+      "sweatshirt",
+      "sweatshirts",
+    ],
+
+    hoodies: [
+      "hoodie",
+      "hoodies",
+      "sweatshirt",
+      "sweatshirts",
+    ],
+  };
+
+  const termsToExpand = [...searchTerms];
+
+  termsToExpand.forEach((term) => {
+    const key = term.toLowerCase();
+
+    if (synonymMap[key]) {
+      searchTerms.push(...synonymMap[key]);
+    }
+  });
+
+  const uniqueTerms = [
+    ...new Set(
+      searchTerms
+        .map((term) => term.trim())
+        .filter(Boolean)
+    ),
+  ];
+
+  const searchConditions = uniqueTerms.flatMap((term) => {
+    const escapedTerm = term.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+    const regex = {
+      $regex: escapedTerm,
+      $options: "i",
+    };
+
+    return [
+      { title: regex },
+      { brand: regex },
+      { category: regex },
+      { description: regex },
+    ];
+  });
+
+  if (searchConditions.length > 0) {
+    filter.$or = searchConditions;
+  }
+
+  const products = await Product.find(filter)
+    .limit(6)
+    .select(
+      "_id title brand sellingPrice images category condition size"
+    );
+
+  console.log("🔎 AI INVENTORY SEARCH:", {
+    query,
+    category,
+    maxPrice,
+    searchTerms: uniqueTerms,
+    results: products.length,
+  });
+
+  return {
+    type: "products",
+    products,
+
+    message: products.length
+      ? `Found ${products.length} item${
+          products.length > 1 ? "s" : ""
+        } for "${query}" 🛍️`
+      : `No products found for "${query}". Try different keywords like the brand or category.`,
+  };
 };
 
 // ── Main AI chat handler ──────────────────────────────────────────────────────
@@ -229,6 +591,27 @@ const handleAIChat = async (req, res) => {
     else {
       console.log("💬 Text message — routing to Groq");
 
+      // ─────────────────────────────────────────────────────────────────────
+      // OBVIOUS PRODUCT SEARCH → BYPASS GROQ
+      // ─────────────────────────────────────────────────────────────────────
+
+      const localSearch = detectProductSearch(message);
+
+      if (localSearch) {
+        console.log(
+          "🛍️ Local product search detected:",
+          localSearch
+        );
+
+        const result = await searchProducts(localSearch);
+
+        return res.json(result);
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+      // ONLY NON-SEARCH MESSAGES GO TO GROQ
+      // ─────────────────────────────────────────────────────────────────────
+
       // Only send actual text conversation to Groq.
       // Product cards / price cards are NOT sent back to the model.
       const cleanHistory = conversationHistory
@@ -284,8 +667,8 @@ const handleAIChat = async (req, res) => {
     // PARSE STRUCTURED AI RESPONSE
     // ─────────────────────────────────────────────────────────────────────────
     //
-    // Groq is using response_format: json_schema.
-    // Therefore aiText should already be a complete JSON string.
+    // Groq is instructed to return JSON as plain text.
+    // Parse the returned JSON string here.
     //
     // We intentionally use JSON.parse(aiText) instead of regex extraction.
     // ─────────────────────────────────────────────────────────────────────────
@@ -498,9 +881,9 @@ const handleAIChat = async (req, res) => {
           filter.$or = searchConditions;
         }
 
-        // ───────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         // DATABASE SEARCH
-        // ───────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
 
         const products = await Product.find(filter)
           .limit(6)
@@ -629,4 +1012,7 @@ const handleAIChat = async (req, res) => {
   }
 };
 
-module.exports = { handleAIChat, uploadAIImage };
+module.exports = {
+  handleAIChat,
+  uploadAIImage,
+};
